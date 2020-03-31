@@ -1,4 +1,4 @@
-function [X,D,Z,J,ker,RE] = KFMC_online(X,M,d,alpha,beta,ker,options)
+function [X,D,Z,J,ker,RE] = KFMC_minibatch(X,M,d,alpha,beta,ker,options)
 % This is the codes of online version of KFMC in the following paper:
 % Jicong Fan, Madeleine Udell. Online High-Rank Matrix Completion. CVPR 2019.
 % Input:    X the incomplete matrix (mxn)
@@ -27,14 +27,21 @@ Z=zeros(d,n);
 X0=X;
 e=1e-5;
 %
+if n>10000
+Xt=X(:,randperm(n,10000));
+else
+Xt=X;
+end
+nt=size(Xt,2);
 if strcmp(ker.type,'rbf') && ker.par==0
     if ker.c>10
         ker.par=var(X(:,1))*ker.c;
     else
-        XX=sum(X.*X,1);
-        dist=repmat(XX,n,1) + repmat(XX',1,n) - 2*X'*X;
-        ker.par=(mean(real(dist(:).^0.5))*ker.c)^2;
+        XX=sum(Xt.*Xt,1);
+        dist=repmat(XX,nt,1) + repmat(XX',1,nt) - 2*Xt'*Xt;
+        ker.par=(mean(mean(real(dist.^0.5)))*ker.c)^2;
     end
+    clear dist Xt XX
 end
 if strcmp(ker.type,'poly') && ker.par(1)==0
     ker.par=[1 2];% [c d]
@@ -59,6 +66,11 @@ if isfield(options,'npass')
 else
 	npass=5;
 end
+if isfield(options,'batch_size')
+    batch_size=options.batch_size;
+else
+	batch_size=10;
+end
 if isfield(options,'gamma')
     gamma=options.gamma;
 else
@@ -70,21 +82,23 @@ exs=0;
 eDs=0;
 for k=1:npass
     vD=zeros(size(D));
-for i=1:n%[randperm(n)]
-    x=X(:,i);
+    i=1;
+while i<n
+    idx=[i:min(i+batch_size-1,n)];
+    x=X(:,idx);
     vx=zeros(size(x));
-    z=Z(:,i);
+    z=Z(:,idx);
     Kdd=kernel(D,D,ker);
     invKdd=inv(Kdd+beta*eye(d));
     for j=1:maxiter
         Kxx=kernel(x,x,ker);
         Kdx=kernel(D,x,ker);
         % obj_f
-        J(i)=0.5*trace(Kxx-Kdx'*z-z'*Kdx+z'*Kdd*z)+0.5*alpha*trace(Kdd)+0.5*beta*sum(z.^2);
+        J(i)=0.5*trace(Kxx-Kdx'*z-z'*Kdx+z'*Kdd*z)+0.5*alpha*trace(Kdd)+0.5*beta*sum(z(:).^2);
         % update z
         z_new=invKdd*Kdx;
         % update x
-        if sum(M(:,i))>0
+        if sum(sum(M(:,idx)))>0
         switch ker.type
             case 'rbf'
                 g_Kxx=0.5;
@@ -103,7 +117,7 @@ for i=1:n%[randperm(n)]
         end
         vx=eta*vx+g_X;
         x_new=x-vx;
-        x_new=x_new.*(1-M(:,i))+X0(:,i).*M(:,i);
+        x_new=x_new.*(1-M(:,idx))+X0(:,idx).*M(:,idx);
         else
             x_new=x;
         end
@@ -120,8 +134,8 @@ for i=1:n%[randperm(n)]
     tt=tt+1;
     eJs=eJs+J(i);
 %     exs=exs+ex00;
-    Z(:,i)=z;
-    X(:,i)=x;
+    Z(:,idx)=z;
+    X(:,idx)=x;
     
    %% update D
     switch ker.type
@@ -146,9 +160,12 @@ for i=1:n%[randperm(n)]
     eD=max(abs(D-D_new));
     D=D_new;
     eD=norm(vD,'fro')/norm(D,'fro');
-    if i==1||mod(i,100)==0||i==n
-        disp(['pass ' num2str(k) ', iteration(data)' num2str(i) ', J=' num2str(J(i))  ', ez=' num2str(ez) ', ex=' num2str(ex) ', eD=' num2str(eD)])
+    if mod(i-1,batch_size*10)==0
+    disp(['pass ' num2str(k) ', iteration(data)' num2str(i) ', J=' num2str(J(i))  ', ez=' num2str(ez) ', ex=' num2str(ex) ', eD=' num2str(eD)])
     end
+    i=i+batch_size;
+%     eDs=eDs+eD;
+%     cD=[cD [ex00;exs/tt;J(i);eJs/tt]];
 end
 if isfield(options,'X_true')
     RE(k)=norm(X-options.X_true,'fro')/norm(options.X_true,'fro');

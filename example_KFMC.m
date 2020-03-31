@@ -1,16 +1,17 @@
 clc
 clear all
 warning off
-n_repeat=10;
+n_repeat=1;
 missrate=0.5;% fraction of unknown entries
+rng(10)
 for pp=1:n_repeat
 % make data
-ns=1;% number of subspaces
+ns=5;% number of subspaces
 m=30;% row dimension
-n=200;% number of data in each subspaces
+n=300;% number of data in each subspaces
 X=[];
 r=3;
-rho=1;
+rho=0.5;
 for k=1:ns
     x=unifrnd(0,1,[r,n]);
     XT=randn(m,r)*x...
@@ -28,15 +29,21 @@ for i=1:nc
 end
 X0=X;% original matrix
 X=X.*M;% incomplete matrix
+%% LRMC
+% nuclear norm minimization
+[Xr{1}]=LRMC_nnm(X,M); 
+% factor nuclear norm minimization
+[Xr{2}]=LRMC_fnnm(X,M,15,1);
 %% KFMC
-rr=30;% number of columns of D
+d=30*ns;% number of columns of D
 %
-ker.type='poly';ker.par=[0 2];options.offline_maxiter=1000;options.eta=0.5;
-[Xr{1},Dt{1},Z,J{1},ker]=KFMC(X,M,rr*ns,0.1,0.01,ker,options);
+ker.type='poly';ker.par=[1 2];
+alpha=1;beta=1;
+[Xr{3}]=KFMC(X,M,d,alpha,beta,ker);
 %
-rr=30;
-ker.type='rbf';ker.par=0;ker.c=3;options.offline_maxiter=500;options.eta=0.5;
-[Xr{2},Dt{2},Z,J{2},ker]=KFMC(X,M,rr*ns,0,0.0001,ker,options);
+ker.type='rbf';ker.par=[];ker.par_c=1;
+alpha=0;beta=0.001;
+[Xr{4}]=KFMC(X,M,d,alpha,beta,ker);
 %%
 for i=1:length(Xr)
 re_error(pp,i)=norm((X0-Xr{i}).*(1-M),'fro')/norm(X0.*(1-M),'fro');

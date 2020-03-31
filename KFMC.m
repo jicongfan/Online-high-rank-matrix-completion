@@ -1,65 +1,101 @@
-function [X,D,Z,J,ker]=KFMC(X,M,d,alpha,beta,ker,options)
+function [X,D,Z,ker,options]=KFMC_new(X,M,d,alpha,beta,ker,options)
 % This is the codes of offline version of KFMC in the following paper:
 % Jicong Fan, Madeleine Udell. Online High-Rank Matrix Completion. CVPR 2019.
-% Input:    X the incomplete matrix (mxn)
-%           M binary matrix (mxn), 0 for missing entries, 1 for observed entries
-%           d the dimension of D
-%           alpha regularization parameter of D; for RBF kernel, alpha has
-%                      no effect on the method
-%           beta regularization parameter of Z
-%           ker kernels; ker.type='rbf' or 'poly'; for rbf kernel,
-%                        ker.par=sigma2; if ker.par=0, estimate it with
-%                        ker.c; ker.c is often set as 1, 2, or 3.
-%                        for poly kernel, ker.par=[c d], c is estimated
-%                        automatically if c=0; d is the degree of
-%                        polynomial
-%           options.gamma
-%           options.eta the momentum paprameter, the default value is 0.5
-%           options.offline_maxiter
-% Written by Jicong Fan, 09/2019, E-mail: jf577@cornell.edu
+% Input 
+%       X: the incomplete matrix (mxn)
+%       M: binary matrix (mxn), 0 for missing entries, 1 for observed entries
+%       d: the dimension of D
+%       alpha: regularization parameter of D;
+%           for RBF kernel, alpha has no effect on the method
+%       beta: regularization parameter of Z
+%       ker: kernel type and parameter
+%           ker.type='rbf' or 'poly'; 
+%           for gaussian rbf kernel,
+%            ker.par=sigma2; if ker.par=[], estimate it with
+%            ker.par_c; ker.par_c is often set as 1, 2, or 3 (1 default)
+%           for poly kernel, 
+%            ker.par=[c d], c: the constant; d: the degree of polynomial
+%            if ker.par=[], automatically estimate c
+%       options.gamma: 1.1 default, no need to tune in practice
+%       options.eta: the momentum paprameter, 0.5 default
+%       options.maxiter: 500 default
+%       options.tolX: relative change of X, stopping criteria
+% Written by Jicong Fan, 09/2019 (updated 03/2020), E-mail: jf577@cornell.edu
 [m,n]=size(X);
+if nargin<7
+    options.gamma=1.1;
+    options.eta=0.5;
+    options.maxiter=500;
+    options.tolX=1e-5;
+end
+if nargin<6
+    ker.type='rbf';
+    ker.par=[];
+end
+if nargin<5
+    beta=0.001;
+end
+if nargin<4
+    alpha=0;
+end
+if nargin<3
+    d=m;
+end
+if nargin<2
+   disp('Require the mask matrix M to indicate the missing entries!')
+   D=[];Z=[];
+   return      
+end
 D=randn(m,d);
 Z=zeros(d,n);
 X0=X;
-e=1e-5;
 % kernel
-if strcmp(ker.type,'rbf') && ker.par==0
-    XX=sum(X.*X,1);
-    dist=repmat(XX,n,1) + repmat(XX',1,n) - 2*X'*X;
-    ker.par=(mean(real(dist(:).^0.5))*ker.c)^2;% gamma
+if strcmp(ker.type,'rbf') && isempty(ker.par)
+    if n<8000
+        Xs=X;
+    else    
+        Xs=X(:,randperm(n,8000));
+        disp('Too large "n" ! For acceleration, do not compute the objective function!')
+    end
+    XX=sum(Xs.*Xs,1);
+    dist=repmat(XX,size(Xs,2),1) + repmat(XX',1,size(Xs,2)) - 2*Xs'*Xs;
+    if ~isfield(ker,'par_c')
+        ker.par_c=1;
+    end
+    ker.par=(mean(real(dist(:).^0.5))*ker.par_c)^2;% sigma^2
+    clear XX Xs dist
 end
-if strcmp(ker.type,'poly') && ker.par(1)==0
-    temp=max(sum(X.^2));
+if strcmp(ker.type,'poly') && isempty(ker.par)
+    temp=mean(sum(X.^2));
     disp(['The estimated constant for polynomial kernel is ' num2str(temp)])
     ker.par=[temp 2];% [c d]
 end
 % monentum
-if isfield(options,'eta')
-    eta=options.eta;
-else
-	eta=0.5;
+if ~isfield(options,'eta')
+    options.eta=0.5;
 end
-if isfield(options,'gamma')
-    gamma=options.gamma;
-else
-	gamma=1.1;
+eta=options.eta;
+if ~isfield(options,'gamma')
+    options.gamma=1.1;
 end
+gamma=options.gamma;
 vD=zeros(size(D));
 vX=zeros(size(X));
 % iter
-if isfield(options,'offline_maxiter')
-    maxiter=options.offline_maxiter;
-else
-	maxiter=1000;
+if ~isfield(options,'maxiter')
+    options.maxiter=500;
 end
+maxiter=options.maxiter;
+if ~isfield(options,'tolX')
+    options.tolX=1e-5;
+end
+e=options.tolX;
 iter=0;
 disp(['kernel type: ' ker.type ' kernel parameter(s):' num2str(ker.par) ' alpha=' num2str(alpha) ' beta=' num2str(beta) ' momentum_eta=' num2str(eta)]) 
 while iter<maxiter
     iter=iter+1;
-    [Kxx,XX]=kernel(X,X,ker);
     Kdx=kernel(D,X,ker);
     Kdd=kernel(D,D,ker);
-    J(iter)=0.5*trace(Kxx-2*Kdx'*Z+Z'*Kdd*Z)+0.5*alpha*trace(Kdd)+0.5*beta*sum(Z(:).^2);
     Z_new=inv(Kdd+beta*eye(d))*Kdx;
     switch ker.type
         case 'rbf'
@@ -84,19 +120,18 @@ while iter<maxiter
     switch ker.type
         case 'rbf'
             g_Kxd=-Z_new';
-            g_Kxx=0.5*eye(n);
             Kdx=kernel(D_new,X,ker);
-            [g_X1,T1,C1]=gXY(g_Kxd,Kdx',X,D_new,ker,'X');
-            [g_X2,T2,C2]=gXX(g_Kxx,Kxx,X,ker,'I');
-            tau=gamma*(1/ker.par*(2*T2-diag(C1(1,:)+2*C2(1,:))));
-            g_X=(g_X1+g_X2).*repmat((diag(tau).^(-1))',m,1);
+            [g_X,~,C]=gXY(g_Kxd,Kdx',X,D_new,ker,'X');
+            tau=gamma*(1/ker.par*(-C(1,:)));
+            g_X=g_X.*repmat((tau.^(-1)),m,1);
         case 'poly'
             XD=X'*D_new;
-            W1=(XX+ker.par(1)).^(ker.par(2)-1);
+            x2=sum(X.^2);
+            W1=(x2+ker.par(1)).^(ker.par(2)-1);
             W2=(XD+ker.par(1)).^(ker.par(2)-1);
-            g_X=X.*(ones(m,1)*diag(W1)')-D*(W2'.*Z_new);
-            v=diag(gamma*W1.*eye(size(W1))).^(-1);
-            g_X=g_X.*repmat(v',size(X,1),1);
+            g_X=X.*(ones(m,1)*W1)-D*(W2'.*Z_new);
+            v=(gamma*W1).^(-1);
+            g_X=g_X.*repmat(v,size(X,1),1);            
     end
     vX=g_X+eta*vX;
     X_new=X-vX;
@@ -106,15 +141,24 @@ while iter<maxiter
     dD=norm(D-D_new,'fro')/norm(D,'fro');
     dX=norm(X-X_new,'fro')/norm(X,'fro');
     cvg=0;
-    if iter>1
-        if abs((J(iter)-J(iter-1))/J(iter-1))<e && dX<e
-            cvg=1;
-        else
-            cvg=0;
-        end
+    if dX<e
+        cvg=1;
+    else
+        cvg=0;
     end
-    if iter<6||mod(iter,100)==0||cvg==1
-        disp(['Iter ' num2str(iter) ': J=' num2str(J(iter)) ', dZ=' num2str(dZ) ', dD=' num2str(dD) ', dX=' num2str(dX)])
+    if iter<4||mod(iter,50)==0||cvg==1
+        if n<8000
+            switch ker.type
+                case 'rbf'
+                    Kxx=eye(n);
+                case 'poly'
+                    Kxx=diag((x2+ker.par(1)).^ker.par(2));
+            end
+            J=0.5*trace(Kxx-2*Kdx'*Z+Z'*Kdd*Z)+0.5*alpha*trace(Kdd)+0.5*beta*sum(Z(:).^2);
+        else
+            J='NotComputed';
+        end
+        disp(['Iter ' num2str(iter) ': J=' num2str(J) ', dZ=' num2str(dZ) ', dD=' num2str(dD) ', dX=' num2str(dX)])
     end
     Z=Z_new;
     D=D_new;
